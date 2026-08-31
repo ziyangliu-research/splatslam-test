@@ -12,6 +12,7 @@ import numpy as np
 import torch
 from scipy.spatial.transform import Rotation
 
+import src.utils.datasets as datasets_module
 from src.utils.datasets import BaseDataset
 
 
@@ -34,11 +35,13 @@ class TartanAirV1StereoChallenge(BaseDataset):
       tx ty tz qx qy qz qw
 
     The GT poses are converted to 4x4 camera-to-world matrices and expressed
-    relative to the first frame. GT is used for trajectory evaluation only;
-    it is never supplied to the tracker or mapper.
+    relative to the first frame. Splat-SLAM uses the left RGB stream; GT poses
+    are retained for trajectory evaluation and the existing mapper interface.
     """
 
     def __init__(self, cfg, device="cuda:0"):
+        # BaseDataset expects input_folder to exist in cfg. The dedicated runner
+        # sets it to the selected sequence before constructing the dataset.
         super().__init__(cfg, device)
 
         self.sequence = cfg["scene"]
@@ -110,8 +113,21 @@ class TartanAirV1StereoChallenge(BaseDataset):
         self.right_paths = self.right_paths[:stop:stride]
         self.poses = poses[:stop:stride]
         self.n_img = len(self.color_paths)
+        if self.n_img == 0:
+            raise ValueError(
+                f"No frames selected for {self.sequence}; check max_frames/stride."
+            )
+
+        # TartanAir Stereo Challenge does not provide sensor depth in this path.
+        # Mapper has a legacy RGB-D-shaped interface and calls .numpy()/.to() on
+        # frame_reader[idx][2], although that value is not used to initialize the
+        # RGB-only tracker. Return zeros as an interface placeholder and disable
+        # sensor-depth metrics in TartanAirV1SLAM.
         self.depth_paths = None
         self.has_sensor_depth = False
+        self._dummy_depth = torch.zeros(
+            (self.H_out, self.W_out), dtype=torch.float32
+        )
         self.w2c_first_pose = np.linalg.inv(self.poses[0])
 
         if self.right_paths and len(self.right_paths) != self.n_img:
@@ -130,4 +146,10 @@ class TartanAirV1StereoChallenge(BaseDataset):
         # BaseDataset.get_color performs resize/crop and BGR->RGB conversion.
         color_data = self.get_color(index)
         pose = torch.from_numpy(self.poses[index]).float()
-        return index, color_data, None, pose
+        return index, color_data, self._dummy_depth.clone(), pose
+
+
+# Mapper imports get_dataset() from src.utils.datasets. Register this adapter in
+# that module's dataset_dict so mapper-side frame_reader construction works in
+# both the parent and multiprocessing-spawned child processes.
+datasets_module.dataset_dict["tartanair_v1_challenge"] = TartanAirV1StereoChallenge
