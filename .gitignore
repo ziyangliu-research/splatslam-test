@@ -16,3 +16,5 @@ wandb
 cull_replica_mesh
 *.egg*
 euler/
+pretrained/
+datasets/

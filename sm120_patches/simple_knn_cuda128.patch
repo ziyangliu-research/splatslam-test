@@ -1,0 +1,12 @@
+diff --git a/simple_knn.cu b/simple_knn.cu
+index e72e4c9..26b1a07 100644
+--- a/simple_knn.cu
++++ b/simple_knn.cu
+@@ -9,6 +9,7 @@
+  * For inquiries contact  george.drettakis@inria.fr
+  */
+ 
++#include <cfloat>
+ #define BOX_SIZE 1024
+ 
+ #include "cuda_runtime.h"

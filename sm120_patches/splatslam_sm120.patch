@@ -1,0 +1,72 @@
+diff --git a/setup.py b/setup.py
+index cafb7c1..a56f855 100644
+--- a/setup.py
++++ b/setup.py
+@@ -32,12 +32,8 @@ setup(
+             extra_compile_args={
+                 'cxx': ['-O3'],
+                 'nvcc': ['-O3',
+-                    '-gencode=arch=compute_60,code=sm_60',
+-                    '-gencode=arch=compute_61,code=sm_61',
+-                    '-gencode=arch=compute_70,code=sm_70',
+-                    '-gencode=arch=compute_75,code=sm_75',
+-                    '-gencode=arch=compute_80,code=sm_80',
+-                    '-gencode=arch=compute_86,code=sm_86',
++                    '-gencode=arch=compute_120,code=sm_120',
++                    '-gencode=arch=compute_120,code=compute_120',
+                 ]
+             }),
+     ],
+diff --git a/thirdparty/diff-gaussian-rasterization-w-pose b/thirdparty/diff-gaussian-rasterization-w-pose
+--- a/thirdparty/diff-gaussian-rasterization-w-pose
++++ b/thirdparty/diff-gaussian-rasterization-w-pose
+@@ -1 +1 @@
+-Subproject commit 43e21bff91cd24986ee3dd52fe0bb06952e50ec7
++Subproject commit 43e21bff91cd24986ee3dd52fe0bb06952e50ec7-dirty
+diff --git a/thirdparty/glorie_slam/lib/altcorr_kernel.cu b/thirdparty/glorie_slam/lib/altcorr_kernel.cu
+index f418f5c..b53be29 100755
+--- a/thirdparty/glorie_slam/lib/altcorr_kernel.cu
++++ b/thirdparty/glorie_slam/lib/altcorr_kernel.cu
+@@ -306,7 +306,7 @@ std::vector<torch::Tensor> altcorr_cuda_forward(
+   const dim3 threads(BLOCK_H, BLOCK_W);
+ 
+ 
+-  AT_DISPATCH_FLOATING_TYPES_AND_HALF(fmap1.type(), "altcorr_forward_kernel", ([&] {
++  AT_DISPATCH_FLOATING_TYPES_AND_HALF(fmap1.scalar_type(), "altcorr_forward_kernel", ([&] {
+     altcorr_forward_kernel<scalar_t><<<blocks, threads>>>(
+         fmap1.packed_accessor32<scalar_t,4,torch::RestrictPtrTraits>(),
+         fmap2.packed_accessor32<scalar_t,4,torch::RestrictPtrTraits>(),
+diff --git a/thirdparty/glorie_slam/lib/correlation_kernels.cu b/thirdparty/glorie_slam/lib/correlation_kernels.cu
+index 2812067..df5735c 100755
+--- a/thirdparty/glorie_slam/lib/correlation_kernels.cu
++++ b/thirdparty/glorie_slam/lib/correlation_kernels.cu
+@@ -142,7 +142,7 @@ std::vector<torch::Tensor> corr_index_cuda_forward(
+   torch::Tensor corr = torch::zeros(
+     {batch_size, 2*radius+1, 2*radius+1, ht, wd}, opts);
+ 
+-  AT_DISPATCH_FLOATING_TYPES_AND_HALF(volume.type(), "sampler_forward_kernel", ([&] {
++  AT_DISPATCH_FLOATING_TYPES_AND_HALF(volume.scalar_type(), "sampler_forward_kernel", ([&] {
+     corr_index_forward_kernel<scalar_t><<<blocks, threads>>>(
+       volume.packed_accessor32<scalar_t,5,torch::RestrictPtrTraits>(),
+       coords.packed_accessor32<float,4,torch::RestrictPtrTraits>(),
+@@ -173,7 +173,7 @@ std::vector<torch::Tensor> corr_index_cuda_backward(
+   const dim3 threads(BLOCK, BLOCK);
+ 
+ 
+-  AT_DISPATCH_FLOATING_TYPES_AND_HALF(volume.type(), "sampler_backward_kernel", ([&] {
++  AT_DISPATCH_FLOATING_TYPES_AND_HALF(volume.scalar_type(), "sampler_backward_kernel", ([&] {
+     corr_index_backward_kernel<scalar_t><<<blocks, threads>>>(
+       coords.packed_accessor32<float,4,torch::RestrictPtrTraits>(),
+       corr_grad.packed_accessor32<scalar_t,5,torch::RestrictPtrTraits>(),
+diff --git a/thirdparty/lietorch b/thirdparty/lietorch
+--- a/thirdparty/lietorch
++++ b/thirdparty/lietorch
+@@ -1 +1 @@
+-Subproject commit 0fa9ce8ffca86d985eca9e189a99690d6f3d4df6
++Subproject commit 0fa9ce8ffca86d985eca9e189a99690d6f3d4df6-dirty
+diff --git a/thirdparty/simple-knn b/thirdparty/simple-knn
+--- a/thirdparty/simple-knn
++++ b/thirdparty/simple-knn
+@@ -1 +1 @@
+-Subproject commit 44f764299fa305faf6ec5ebd99939e0508331503
++Subproject commit 44f764299fa305faf6ec5ebd99939e0508331503-dirty

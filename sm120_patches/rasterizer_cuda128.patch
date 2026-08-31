@@ -1,0 +1,22 @@
+diff --git a/cuda_rasterizer/auxiliary.h b/cuda_rasterizer/auxiliary.h
+index 4d4b9b7..0fdf86f 100644
+--- a/cuda_rasterizer/auxiliary.h
++++ b/cuda_rasterizer/auxiliary.h
+@@ -151,7 +151,7 @@ __forceinline__ __device__ bool in_frustum(int idx,
+ 	float3 p_proj = { p_hom.x * p_w, p_hom.y * p_w, p_hom.z * p_w };
+ 	p_view = transformPoint4x3(p_orig, viewmatrix);
+ 
+-	if (p_view.z <= 0.2f)// || ((p_proj.x < -1.3 || p_proj.x > 1.3 || p_proj.y < -1.3 || p_proj.y > 1.3)))
++	if (p_view.z <= 0.001f)// || ((p_proj.x < -1.3 || p_proj.x > 1.3 || p_proj.y < -1.3 || p_proj.y > 1.3)))
+ 	{
+ 		if (prefiltered)
+ 		{
+diff --git a/cuda_rasterizer/rasterizer_impl.h b/cuda_rasterizer/rasterizer_impl.h
+index bc3f0ec..c86772f 100644
+--- a/cuda_rasterizer/rasterizer_impl.h
++++ b/cuda_rasterizer/rasterizer_impl.h
+@@ -1,3 +1,4 @@
++#include <cstdint>
+ /*
+  * Copyright (C) 2023, Inria
+  * GRAPHDECO research group, https://team.inria.fr/graphdeco
