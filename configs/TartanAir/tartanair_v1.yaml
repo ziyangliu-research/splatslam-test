@@ -1,0 +1,30 @@
+# TartanAir V1 Visual SLAM Stereo Challenge adapter.
+# Splat-SLAM is RGB-only; image_left is used as the monocular RGB stream.
+# Camera calibration follows the TartanAir V1 challenge specification.
+
+dataset: 'tartanair_v1_challenge'
+
+cam:
+  H: 480
+  W: 640
+  fx: 320.0
+  fy: 320.0
+  cx: 320.0
+  cy: 240.0
+  png_depth_scale: 1.0
+  H_edge: 0
+  W_edge: 0
+  H_out: 480
+  W_out: 640
+
+# The challenge package used here does not contain sensor depth.
+# Disable mesh generation for the baseline TartanAir evaluation path.
+meshing:
+  mesh: False
+  mesh_before_final_ba: False
+  gt_mesh_path: ''
+
+data:
+  dataset_root: /home/shiyo/Desktop/Datasets/TartanAir_Stereo_Challenge/stereo
+  gt_root: /home/shiyo/Desktop/Datasets/TartanAir_Stereo_Challenge/ground_truth/stereo_gt
+  output: output/TartanAir_V1
