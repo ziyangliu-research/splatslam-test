@@ -21,13 +21,9 @@ def extract_full_estimated_c2w(slam) -> np.ndarray:
     traj_est_inv = slam.traj_filler(slam.stream)
     traj_est = traj_est_inv.inv().matrix().data.cpu().numpy()
 
-    # Match Splat-SLAM's original full_traj_eval(): replace filled values at
-    # DROID keyframe timestamps with the final optimized keyframe poses.
     kf_num = slam.video.counter.value
     if kf_num > 0:
-        kf_timestamps = (
-            slam.video.timestamp[:kf_num].detach().cpu().int().numpy()
-        )
+        kf_timestamps = slam.video.timestamp[:kf_num].detach().cpu().int().numpy()
         kf_poses = (
             SE3(slam.video.poses[:kf_num].clone())
             .inv()
@@ -71,7 +67,6 @@ def evaluate_ate_se3(
     finite = np.isfinite(traj_est_c2w[:n]).all(axis=(1, 2))
     finite &= np.isfinite(gt_c2w[:n]).all(axis=(1, 2))
 
-    # Frames never processed by the tracker cannot belong to a valid map.
     processed_frames = max(0, min(int(processed_frames), n))
     finite[np.arange(n) >= processed_frames] = False
 
@@ -101,8 +96,6 @@ def evaluate_ate_se3(
         poses_se3=list(gt_c2w[indices]), timestamps=timestamps
     )
 
-    # Rigid alignment only. correct_scale=False is the key difference from
-    # Splat-SLAM's original monocular Sim(3) evaluator.
     r_a, t_a, s_a = traj_est.align(traj_ref, correct_scale=False)
     ape = metrics.APE(metrics.PoseRelation.translation_part)
     ape.process_data((traj_ref, traj_est))
@@ -127,13 +120,12 @@ def evaluate_split_rendering(
     segment_start: int,
     segment_end: int,
     save_dir: str,
+    tag: str = "final",
 ) -> Dict:
     """Render every frame in the valid map segment and report 8:2 metrics.
 
-    Cameras are created at the final DROID estimated poses. No per-test-frame
-    exposure fitting or other optimization is performed. For consistency, the
-    same zero exposure correction is used for train and test frames during this
-    evaluation.
+    The evaluation itself performs no optimization. Test frames are ephemeral
+    cameras at the estimated DROID poses and never become mapper viewpoints.
     """
     device = torch.device(mapper.config["device"])
     projection_matrix = getProjectionMatrix2(
@@ -150,7 +142,6 @@ def evaluate_split_rendering(
     rows = []
     train_psnr, train_ssim = [], []
     test_psnr, test_ssim = [], []
-
     dummy_depth = np.zeros((stream.H_out, stream.W_out), dtype=np.float32)
 
     with torch.no_grad():
@@ -210,12 +201,10 @@ def evaluate_split_rendering(
                 train_psnr.append(psnr_value)
                 train_ssim.append(ssim_value)
 
-            # Camera is intentionally ephemeral; test frames must never become
-            # mapper viewpoints or optimizer parameters.
             del camera, rendered, gt_image, c2w, w2c
 
     os.makedirs(save_dir, exist_ok=True)
-    csv_path = os.path.join(save_dir, "split_render_metrics.csv")
+    csv_path = os.path.join(save_dir, f"split_render_metrics_{tag}.csv")
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
             f,
@@ -238,27 +227,37 @@ def evaluate_split_rendering(
     }
 
 
-def save_evaluation_summary(save_dir: str, summary: Dict) -> str:
+def save_evaluation_summary(
+    save_dir: str,
+    summary: Dict,
+    basename: str = "evaluation_summary",
+) -> str:
     os.makedirs(save_dir, exist_ok=True)
-    path = os.path.join(save_dir, "evaluation_summary.json")
+    path = os.path.join(save_dir, f"{basename}.json")
     with open(path, "w", encoding="utf-8") as f:
         json.dump(summary, f, indent=2, allow_nan=True)
 
-    text_path = os.path.join(save_dir, "evaluation_summary.txt")
+    text_path = os.path.join(save_dir, f"{basename}.txt")
+    fps_value = summary.get("fps")
+    fps_text = "-" if fps_value is None else f"{float(fps_value):.4f}"
+    gaussians = summary.get("gaussians")
+    gaussians_text = "-" if gaussians is None else str(int(gaussians))
+
     with open(text_path, "w", encoding="utf-8") as f:
         f.write(
-            "Sequence      MaxMap       ATE SE3(m)     Train PSNR/SSIM       "
-            "Test PSNR/SSIM        FPS       Gaussians\n"
+            "Mode      Sequence      MaxMap       ATE SE3(m)    ATE Sim3(m)   "
+            "Train PSNR/SSIM       Test PSNR/SSIM        FPS       Gaussians\n"
         )
         f.write(
+            f"{summary.get('mode', '-'):8s}  "
             f"{summary.get('sequence', '-'):10s}  "
             f"{summary.get('maxmap_percent', float('nan')):8.2f}%  "
             f"{summary.get('ate_rmse_se3_m', float('nan')):12.6f}  "
+            f"{summary.get('ate_rmse_sim3_m', float('nan')):12.6f}  "
             f"{summary.get('train_psnr', float('nan')):7.4f}/"
             f"{summary.get('train_ssim', float('nan')):.6f}    "
             f"{summary.get('test_psnr', float('nan')):7.4f}/"
             f"{summary.get('test_ssim', float('nan')):.6f}    "
-            f"{summary.get('fps', float('nan')):8.4f}  "
-            f"{int(summary.get('gaussians', 0)):10d}\n"
+            f"{fps_text:>8s}  {gaussians_text:>10s}\n"
         )
     return path
