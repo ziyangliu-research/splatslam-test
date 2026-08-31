@@ -1,7 +1,17 @@
 import argparse
 import os
 import random
+import warnings
 from time import gmtime, strftime
+
+# Old DROID/GlORIE modules use torch.cuda.amp.autocast(...). It is still valid
+# in PyTorch 2.7 but emits a FutureWarning. Suppress only this known warning;
+# other FutureWarnings remain visible.
+warnings.filterwarnings(
+    "ignore",
+    category=FutureWarning,
+    message=r"`torch\.cuda\.amp\.autocast\(args\.\.\.\)` is deprecated.*",
+)
 
 import numpy as np
 import torch
@@ -54,7 +64,19 @@ def main():
         "--final_refine_iters",
         type=int,
         default=None,
-        help="Override final 3DGS refinement iterations for quick tests.",
+        help="Override final 3DGS refinement iterations. Omit for the original 26000.",
+    )
+    parser.add_argument(
+        "--test_every",
+        type=int,
+        default=None,
+        help="Override held-out split period. Default: 5.",
+    )
+    parser.add_argument(
+        "--test_offset",
+        type=int,
+        default=None,
+        help="Override held-out offset. Default: 4 => frames 4,9,14,... are test.",
     )
     args = parser.parse_args()
 
@@ -62,8 +84,6 @@ def main():
 
     cfg = config.load_config(args.config, "./configs/splat_slam.yaml")
     cfg["scene"] = args.sequence
-    # BaseDataset expects input_folder. The TartanAir loader maps it to the
-    # sequence directory under dataset_root.
     cfg["data"]["input_folder"] = args.sequence
 
     if args.only_tracking:
@@ -75,6 +95,10 @@ def main():
         cfg["stride"] = args.stride
     if args.final_refine_iters is not None:
         cfg["mapping"]["final_refine_iters"] = args.final_refine_iters
+    if args.test_every is not None:
+        cfg["evaluation"]["test_every"] = args.test_every
+    if args.test_offset is not None:
+        cfg["evaluation"]["test_offset"] = args.test_offset
 
     setup_seed(cfg["setup_seed"])
 
@@ -91,6 +115,10 @@ def main():
         + f"   scene: {cfg['scene']},\n"
         + f"   only_tracking: {cfg['only_tracking']},\n"
         + f"   max_frames: {cfg['max_frames']}, stride: {cfg['stride']},\n"
+        + f"   split: source_frame_id % {cfg['evaluation']['test_every']} == "
+        + f"{cfg['evaluation']['test_offset']} -> test,\n"
+        + f"   trajectory eval: SE(3), fixed metric scale,\n"
+        + f"   final_refine_iters: {cfg['mapping']['final_refine_iters']},\n"
         + f"   output: {output_dir}\n"
         + "-" * 30
     )
