@@ -1,4 +1,3 @@
-import json
 import os
 
 import numpy as np
@@ -18,22 +17,22 @@ from src.utils.tartanair_sim3 import evaluate_ate_sim3
 
 
 def _no_sensor_depth_eval(*args, **kwargs):
-    """Return NaN depth metrics when the dataset has no sensor depth."""
     return np.nan, np.nan, np.nan
 
 
 class TartanAirV1SLAM(SLAM):
-    """Splat-SLAM wrapper for the TartanAir V1 challenge benchmark.
+    """TartanAir benchmark wrapper with one-run ONLINE + FULL evaluation.
 
-    The challenge package contains stereo RGB and GT poses, but Splat-SLAM is a
-    monocular RGB-only method. The left stream is used for SLAM. Every frame is
-    sent through DROID pose estimation; held-out test frames are blocked only at
-    the Gaussian mapper boundary.
+    ONLINE is evaluated immediately after the input stream ends, before any
+    end-of-sequence global BA or final Gaussian refinement. It is therefore the
+    exact state corresponding to final_ba=False and final_refine_iters=0.
+
+    FULL continues from that same state with the original Splat-SLAM final
+    global BA and final Gaussian refinement, then evaluates again.
     """
 
     def __init__(self, cfg, stream):
         super().__init__(cfg, stream)
-
         self.processed_frames = mp.Value("i", 0)
         self.online_elapsed = mp.Value("d", 0.0)
         self.video.eval_depth_l1 = _no_sensor_depth_eval
@@ -44,7 +43,6 @@ class TartanAirV1SLAM(SLAM):
         self.all_trigered += 1
 
         os.makedirs(f"{self.save_dir}/mono_priors/depths", exist_ok=True)
-
         while self.all_trigered < self.num_running_thread:
             pass
         self.printer.pbar_ready()
@@ -61,6 +59,7 @@ class TartanAirV1SLAM(SLAM):
         ratio = (processed / total) if total else 0.0
         summary = {
             "status": "failed",
+            "mode": "FAILED",
             "failure_stage": stage,
             "exitcode": int(exitcode),
             "sequence": self.cfg["scene"],
@@ -72,76 +71,24 @@ class TartanAirV1SLAM(SLAM):
         }
         save_evaluation_summary(self.save_dir, summary)
 
-    def terminate(self):
-        """TartanAir-specific finalization and benchmark evaluation.
-
-        SE(3) and Sim(3) ATE are both reported on the exact same MaxMap interval.
-        SE(3) is the metric-scale-fixed benchmark value used in our comparison
-        table; Sim(3) matches the original monocular Splat-SLAM protocol.
-        """
-        if self.only_tracking:
-            self.video.save_video(f"{self.save_dir}/video.npz")
-            traj_est = extract_full_estimated_c2w(self)
-            gt = np.asarray(self.stream.poses)
-            ate = evaluate_ate_se3(
-                traj_est, gt, processed_frames=int(self.processed_frames.value)
-            )
-            ate_sim3 = evaluate_ate_sim3(
-                traj_est, gt, ate["maxmap_start"], ate["maxmap_end"]
-            )
-            elapsed = float(self.online_elapsed.value)
-            processed = int(self.processed_frames.value)
-            summary = {
-                "status": "ok_tracking_only",
-                "sequence": self.cfg["scene"],
-                "processed_frames": processed,
-                "total_frames": len(self.stream),
-                "online_wall_sec": elapsed,
-                "fps": (processed / elapsed) if elapsed > 0 else float("nan"),
-                "split_rule": (
-                    f"source_frame_id % {self.stream.test_every} == "
-                    f"{self.stream.test_offset} -> test"
-                ),
-                **ate,
-                **ate_sim3,
-            }
-            save_evaluation_summary(self.save_dir, summary)
-            self.printer.print(
-                "Tracking-only trajectory evaluation:\n"
-                f"  MaxMap: {summary['maxmap_percent']:.2f}%\n"
-                f"  ATE RMSE SE(3):  {summary['ate_rmse_se3_m']:.6f} m\n"
-                f"  ATE RMSE Sim(3): {summary['ate_rmse_sim3_m']:.6f} m",
-                FontColor.EVAL,
-            )
-            return
-
-        # Final global BA is pose/depth-only and may use train and test frames.
-        if self.cfg["tracking"]["backend"]["final_ba"]:
-            self.backend()
-
-        self.video.save_video(f"{self.save_dir}/video.npz")
-
-        # Test RGB frames were never sent to Mapper, so they cannot enter final
-        # Gaussian refinement.
-        final_refine_iters = int(self.cfg["mapping"]["final_refine_iters"])
-        if final_refine_iters > 0:
-            self.mapper.final_refine(iters=final_refine_iters)
-
+    def _evaluate_current_state(self, mode, include_fps, trajectory_filename):
+        """Evaluate the current pose/map state without modifying it."""
         traj_est = extract_full_estimated_c2w(self)
         gt = np.asarray(self.stream.poses)
         processed = int(self.processed_frames.value)
+
         ate = evaluate_ate_se3(traj_est, gt, processed_frames=processed)
         ate_sim3 = evaluate_ate_sim3(
             traj_est, gt, ate["maxmap_start"], ate["maxmap_end"]
         )
 
         np.savez(
-            os.path.join(self.save_dir, "tartanair_eval_trajectories.npz"),
+            os.path.join(self.save_dir, trajectory_filename),
             estimated_c2w=traj_est,
             gt_c2w=gt,
         )
 
-        if ate["maxmap_start"] is not None and ate["maxmap_frames"] > 0:
+        if (not self.only_tracking) and ate["maxmap_start"] is not None and ate["maxmap_frames"] > 0:
             rendering_metrics = evaluate_split_rendering(
                 self.mapper,
                 self.stream,
@@ -149,7 +96,9 @@ class TartanAirV1SLAM(SLAM):
                 ate["maxmap_start"],
                 ate["maxmap_end"],
                 self.save_dir,
+                tag=mode.lower(),
             )
+            gaussian_count = int(self.mapper.gaussians.get_xyz.shape[0])
         else:
             rendering_metrics = {
                 "train_psnr": float("nan"),
@@ -159,20 +108,23 @@ class TartanAirV1SLAM(SLAM):
                 "train_frames_evaluated": 0,
                 "test_frames_evaluated": 0,
             }
+            gaussian_count = None
 
         elapsed = float(self.online_elapsed.value)
-        gaussian_count = int(self.mapper.gaussians.get_xyz.shape[0])
+        online_fps = (processed / elapsed) if elapsed > 0 else float("nan")
+
         summary = {
-            "status": "ok",
+            "status": "ok" if not self.only_tracking else "ok_tracking_only",
+            "mode": mode,
             "sequence": self.cfg["scene"],
             "processed_frames": processed,
             "total_frames": len(self.stream),
             "online_wall_sec": elapsed,
-            # Online tracking+mapping FPS. Final global BA, final 3DGS refine,
-            # and metric rendering are excluded.
-            "fps": (processed / elapsed) if elapsed > 0 else float("nan"),
+            # Only ONLINE gets an FPS entry. FULL deliberately reports no FPS
+            # because final BA/refinement are post-processing.
+            "fps": online_fps if include_fps else None,
+            "online_fps_reference": online_fps,
             "gaussians": gaussian_count,
-            "final_refine_iters": final_refine_iters,
             "trajectory_alignment_primary": "SE3 (rigid; scale fixed)",
             "trajectory_alignment_reference": "Sim3 (scale fitted; original monocular protocol)",
             "split_rule": (
@@ -187,19 +139,90 @@ class TartanAirV1SLAM(SLAM):
             **ate_sim3,
             **rendering_metrics,
         }
-        summary_path = save_evaluation_summary(self.save_dir, summary)
+        return summary
 
+    def _print_summary(self, title, summary, path):
+        fps_text = "-" if summary.get("fps") is None else f"{summary['fps']:.4f}"
+        gaussian_text = "-" if summary.get("gaussians") is None else str(summary["gaussians"])
         self.printer.print(
-            "Final TartanAir evaluation:\n"
+            f"{title}:\n"
             f"  MaxMap: {summary['maxmap_percent']:.2f}%\n"
             f"  ATE RMSE SE(3):  {summary['ate_rmse_se3_m']:.6f} m\n"
             f"  ATE RMSE Sim(3): {summary['ate_rmse_sim3_m']:.6f} m\n"
             f"  Train PSNR/SSIM: {summary['train_psnr']:.4f}/{summary['train_ssim']:.6f}\n"
             f"  Test  PSNR/SSIM: {summary['test_psnr']:.4f}/{summary['test_ssim']:.6f}\n"
-            f"  Online FPS: {summary['fps']:.4f}\n"
-            f"  Gaussians: {summary['gaussians']}\n"
-            f"  Summary: {summary_path}",
+            f"  FPS: {fps_text}\n"
+            f"  Gaussians: {gaussian_text}\n"
+            f"  Summary: {path}",
             FontColor.EVAL,
+        )
+
+    def terminate(self):
+        """Evaluate ONLINE state, then continue to FULL post-processed state."""
+        # ---------------- ONLINE checkpoint ----------------
+        # At this exact point no end-of-sequence BA/refinement has run. This is
+        # equivalent to final_ba=False + final_refine_iters=0.
+        self.video.save_video(f"{self.save_dir}/video_online.npz")
+        online_summary = self._evaluate_current_state(
+            mode="ONLINE",
+            include_fps=True,
+            trajectory_filename="tartanair_eval_trajectories_online.npz",
+        )
+        online_summary.update(
+            {
+                "final_ba_applied": False,
+                "final_refine_iters_applied": 0,
+                "fps_definition": "input frames / online tracking+mapping wall time; excludes final BA, final refinement, and metric rendering",
+            }
+        )
+        online_path = save_evaluation_summary(
+            self.save_dir, online_summary, basename="evaluation_online"
+        )
+        self._print_summary("ONLINE evaluation (no final BA / no final refine)", online_summary, online_path)
+
+        if self.only_tracking:
+            # Keep the conventional summary alias for tracking-only runs.
+            save_evaluation_summary(self.save_dir, online_summary)
+            return
+
+        # Evaluation rendering is not part of the timed online pipeline. Free
+        # temporary allocations before continuing the original post-processing.
+        torch.cuda.empty_cache()
+
+        # ---------------- FULL post-processing ----------------
+        final_ba_enabled = bool(self.cfg["tracking"]["backend"]["final_ba"])
+        final_refine_iters = int(self.cfg["mapping"]["final_refine_iters"])
+
+        if final_ba_enabled:
+            self.backend()
+
+        self.video.save_video(f"{self.save_dir}/video_full.npz")
+
+        if final_refine_iters > 0:
+            self.mapper.final_refine(iters=final_refine_iters)
+
+        full_summary = self._evaluate_current_state(
+            mode="FULL",
+            include_fps=False,
+            trajectory_filename="tartanair_eval_trajectories_full.npz",
+        )
+        full_summary.update(
+            {
+                "final_ba_applied": final_ba_enabled,
+                "final_refine_iters_applied": final_refine_iters,
+                "fps_definition": None,
+                "fps_note": "FULL result includes end-of-sequence post-processing; FPS is intentionally not reported.",
+            }
+        )
+        full_path = save_evaluation_summary(
+            self.save_dir, full_summary, basename="evaluation_full"
+        )
+        # Backward-compatible alias: evaluation_summary.* refers to FULL.
+        save_evaluation_summary(self.save_dir, full_summary)
+        self._print_summary(
+            f"FULL evaluation (final BA={final_ba_enabled}, final refine={final_refine_iters})",
+            full_summary,
+            full_path,
         )
 
     def run(self):
@@ -223,8 +246,7 @@ class TartanAirV1SLAM(SLAM):
                         mapping_process.terminate()
                     self._write_failure_summary("tracking", tracking_process.exitcode)
                     raise RuntimeError(
-                        f"TartanAir tracking process failed with exit code "
-                        f"{tracking_process.exitcode}."
+                        f"TartanAir tracking process failed with exit code {tracking_process.exitcode}."
                     )
 
                 if mapping_process.exitcode not in (None, 0):
@@ -232,8 +254,7 @@ class TartanAirV1SLAM(SLAM):
                         tracking_process.terminate()
                     self._write_failure_summary("mapping", mapping_process.exitcode)
                     raise RuntimeError(
-                        f"TartanAir mapping process failed with exit code "
-                        f"{mapping_process.exitcode}."
+                        f"TartanAir mapping process failed with exit code {mapping_process.exitcode}."
                     )
 
                 if all(process.exitcode is not None for process in processes):
