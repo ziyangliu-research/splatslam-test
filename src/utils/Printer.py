@@ -77,6 +77,10 @@ class Printer(TrivialPrinter):
             message = self.msg_queue.get()
             if message == "READY":
                 break
+            elif message == "DONE":
+                # A worker may fail before the progress bar is initialized.
+                # In that case terminate cleanly instead of waiting forever for READY.
+                return
             else:
                 print(message)
         with tqdm(total=total_img_num) as pbar:
