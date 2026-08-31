@@ -14,6 +14,7 @@ from src.utils.tartanair_eval import (
     extract_full_estimated_c2w,
     save_evaluation_summary,
 )
+from src.utils.tartanair_sim3 import evaluate_ate_sim3
 
 
 def _no_sensor_depth_eval(*args, **kwargs):
@@ -33,13 +34,8 @@ class TartanAirV1SLAM(SLAM):
     def __init__(self, cfg, stream):
         super().__init__(cfg, stream)
 
-        # Shared runtime bookkeeping. These are readable by tracking, mapping and
-        # the parent process under multiprocessing spawn.
         self.processed_frames = mp.Value("i", 0)
         self.online_elapsed = mp.Value("d", 0.0)
-
-        # The dataset has no sensor-depth GT. Keep the replacement at module
-        # scope so the SLAM object remains picklable under spawn.
         self.video.eval_depth_l1 = _no_sensor_depth_eval
 
     def tracking(self, pipe):
@@ -79,9 +75,9 @@ class TartanAirV1SLAM(SLAM):
     def terminate(self):
         """TartanAir-specific finalization and benchmark evaluation.
 
-        Unlike the original monocular evaluator, trajectory alignment here is
-        rigid SE(3): metric scale is never fitted. Rendering metrics are split
-        over all frames in the largest valid tracked interval.
+        SE(3) and Sim(3) ATE are both reported on the exact same MaxMap interval.
+        SE(3) is the metric-scale-fixed benchmark value used in our comparison
+        table; Sim(3) matches the original monocular Splat-SLAM protocol.
         """
         if self.only_tracking:
             self.video.save_video(f"{self.save_dir}/video.npz")
@@ -89,6 +85,9 @@ class TartanAirV1SLAM(SLAM):
             gt = np.asarray(self.stream.poses)
             ate = evaluate_ate_se3(
                 traj_est, gt, processed_frames=int(self.processed_frames.value)
+            )
+            ate_sim3 = evaluate_ate_sim3(
+                traj_est, gt, ate["maxmap_start"], ate["maxmap_end"]
             )
             elapsed = float(self.online_elapsed.value)
             processed = int(self.processed_frames.value)
@@ -104,26 +103,26 @@ class TartanAirV1SLAM(SLAM):
                     f"{self.stream.test_offset} -> test"
                 ),
                 **ate,
+                **ate_sim3,
             }
             save_evaluation_summary(self.save_dir, summary)
             self.printer.print(
-                f"Tracking-only SE(3) ATE RMSE: {summary['ate_rmse_se3_m']:.6f} m; "
-                f"MaxMap: {summary['maxmap_percent']:.2f}%",
+                "Tracking-only trajectory evaluation:\n"
+                f"  MaxMap: {summary['maxmap_percent']:.2f}%\n"
+                f"  ATE RMSE SE(3):  {summary['ate_rmse_se3_m']:.6f} m\n"
+                f"  ATE RMSE Sim(3): {summary['ate_rmse_sim3_m']:.6f} m",
                 FontColor.EVAL,
             )
             return
 
-        # DROID final global BA is pose/depth-only and may use both train and
-        # test frames, as requested. It does not optimize the Gaussian map from
-        # held-out RGB observations.
+        # Final global BA is pose/depth-only and may use train and test frames.
         if self.cfg["tracking"]["backend"]["final_ba"]:
             self.backend()
 
         self.video.save_video(f"{self.save_dir}/video.npz")
 
-        # The original final refinement optimizes Gaussian/map appearance using
-        # mapper.viewpoints only. Since test frames are never sent to Mapper,
-        # they cannot enter this optimization.
+        # Test RGB frames were never sent to Mapper, so they cannot enter final
+        # Gaussian refinement.
         final_refine_iters = int(self.cfg["mapping"]["final_refine_iters"])
         if final_refine_iters > 0:
             self.mapper.final_refine(iters=final_refine_iters)
@@ -132,6 +131,9 @@ class TartanAirV1SLAM(SLAM):
         gt = np.asarray(self.stream.poses)
         processed = int(self.processed_frames.value)
         ate = evaluate_ate_se3(traj_est, gt, processed_frames=processed)
+        ate_sim3 = evaluate_ate_sim3(
+            traj_est, gt, ate["maxmap_start"], ate["maxmap_end"]
+        )
 
         np.savez(
             os.path.join(self.save_dir, "tartanair_eval_trajectories.npz"),
@@ -166,20 +168,23 @@ class TartanAirV1SLAM(SLAM):
             "processed_frames": processed,
             "total_frames": len(self.stream),
             "online_wall_sec": elapsed,
-            # FPS is deliberately online tracking+mapping FPS. Final global BA,
-            # final 3DGS refinement and metric rendering are excluded.
+            # Online tracking+mapping FPS. Final global BA, final 3DGS refine,
+            # and metric rendering are excluded.
             "fps": (processed / elapsed) if elapsed > 0 else float("nan"),
             "gaussians": gaussian_count,
             "final_refine_iters": final_refine_iters,
-            "trajectory_alignment": "SE3 (rigid; scale fixed)",
+            "trajectory_alignment_primary": "SE3 (rigid; scale fixed)",
+            "trajectory_alignment_reference": "Sim3 (scale fitted; original monocular protocol)",
             "split_rule": (
                 f"source_frame_id % {self.stream.test_every} == "
                 f"{self.stream.test_offset} -> test"
             ),
             "test_frames_used_for_pose": True,
+            "test_frames_used_for_droid_keyframe_selection": True,
             "test_frames_used_for_gaussian_mapping": False,
             "test_frames_used_for_map_optimization": False,
             **ate,
+            **ate_sim3,
             **rendering_metrics,
         }
         summary_path = save_evaluation_summary(self.save_dir, summary)
@@ -187,7 +192,8 @@ class TartanAirV1SLAM(SLAM):
         self.printer.print(
             "Final TartanAir evaluation:\n"
             f"  MaxMap: {summary['maxmap_percent']:.2f}%\n"
-            f"  ATE RMSE SE(3): {summary['ate_rmse_se3_m']:.6f} m\n"
+            f"  ATE RMSE SE(3):  {summary['ate_rmse_se3_m']:.6f} m\n"
+            f"  ATE RMSE Sim(3): {summary['ate_rmse_sim3_m']:.6f} m\n"
             f"  Train PSNR/SSIM: {summary['train_psnr']:.4f}/{summary['train_ssim']:.6f}\n"
             f"  Test  PSNR/SSIM: {summary['test_psnr']:.4f}/{summary['test_ssim']:.6f}\n"
             f"  Online FPS: {summary['fps']:.4f}\n"
