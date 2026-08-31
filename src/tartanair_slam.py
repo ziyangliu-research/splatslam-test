@@ -3,6 +3,11 @@ import numpy as np
 from src.slam import SLAM
 
 
+def _no_sensor_depth_eval(*args, **kwargs):
+    """Return NaN depth metrics when the dataset has no sensor depth."""
+    return np.nan, np.nan, np.nan
+
+
 class TartanAirV1SLAM(SLAM):
     """Splat-SLAM wrapper for TartanAir V1 challenge data.
 
@@ -15,8 +20,6 @@ class TartanAirV1SLAM(SLAM):
 
     def __init__(self, cfg, stream):
         super().__init__(cfg, stream)
-
-        def _no_sensor_depth_eval(*args, **kwargs):
-            return np.nan, np.nan, np.nan
-
+        # Keep the replacement at module scope so the SLAM object remains
+        # picklable with torch.multiprocessing's spawn start method.
         self.video.eval_depth_l1 = _no_sensor_depth_eval
