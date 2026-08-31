@@ -32,7 +32,11 @@ def get_mono_depth_estimator(cfg):
 def get_omnidata_model(pretrained_path, device, num_channels):
     from thirdparty.mono_priors.omnidata.modules.midas.dpt_depth import DPTDepthModel
     model = DPTDepthModel(backbone='vitb_rn50_384',num_channels=num_channels)
-    checkpoint = torch.load(pretrained_path)
+    # PyTorch 2.6+ changed torch.load(..., weights_only) default from False to True.
+    # Omnidata's official checkpoint is a legacy PyTorch-Lightning checkpoint that
+    # contains non-tensor metadata/classes, so it must be loaded with the legacy
+    # behavior. Only use this with the trusted official Omnidata checkpoint.
+    checkpoint = torch.load(pretrained_path, weights_only=False)
     
     if 'state_dict' in checkpoint:
         state_dict = {}
