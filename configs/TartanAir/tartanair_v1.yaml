@@ -17,6 +17,19 @@ cam:
   H_out: 480
   W_out: 640
 
+# Full Challenge sequences can produce more than the original 512 DROID
+# keyframes. This only raises capacity; it does not change tracking decisions.
+tracking:
+  buffer: 2048
+
+# Held-out rendering protocol:
+# source frames 4, 9, 14, ... are test frames. They still participate in
+# tracking / pose BA / loop closure, but are never sent to Gaussian mapping.
+evaluation:
+  test_every: 5
+  test_offset: 4
+  trajectory_alignment: 'se3'
+
 # The challenge package used here does not contain sensor depth.
 # Disable mesh generation for the baseline TartanAir evaluation path.
 meshing:
