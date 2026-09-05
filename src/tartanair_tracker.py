@@ -41,17 +41,21 @@ class TartanAirSplitTracker:
         self.ba_freq = self.cfg["tracking"]["backend"]["ba_freq"]
         self.printer: Printer = slam.printer
 
-        # Shared values owned by TartanAirV1SLAM. They remain visible from the
-        # parent/mapping process under multiprocessing spawn.
         self.processed_frames = slam.processed_frames
         self.online_elapsed = slam.online_elapsed
+        self.online_start_time = slam.online_start_time
 
     def run(self, stream: BaseDataset):
         prev_kf_idx = 0
         prev_ba_idx = 0
         number_of_kf = 0
         intrinsic = stream.get_intrinsic()
-        start = time.perf_counter()
+
+        # Start after model/process initialization. Synchronization ensures no
+        # setup CUDA work leaks into the measured online processing interval.
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        self.online_start_time.value = time.perf_counter()
 
         for i in range(len(stream)):
             timestamp, image, _, _ = stream[i]
@@ -104,11 +108,15 @@ class TartanAirSplitTracker:
             self.processed_frames.value = i + 1
             self.printer.update_pbar()
 
-        # Set the online timing before notifying the mapper of EOF so the mapper
-        # can safely write it into the final summary without a race.
-        self.online_elapsed.value = time.perf_counter() - start
+        # Finish all tracker-context CUDA work before EOF. For mapping runs the
+        # mapping process performs its own final CUDA synchronize and determines
+        # the authoritative online end time after receiving this EOF.
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
 
-        if not self.only_tracking:
+        if self.only_tracking:
+            self.online_elapsed.value = time.perf_counter() - self.online_start_time.value
+        else:
             self.pipe.send(
                 {"is_keyframe": True, "video_idx": None, "timestamp": None, "end": True}
             )
