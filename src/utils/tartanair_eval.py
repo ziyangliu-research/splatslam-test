@@ -8,6 +8,7 @@ import torch
 from evo.core import metrics
 from evo.core.trajectory import PoseTrajectory3D
 from lietorch import SE3
+from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
 from thirdparty.gaussian_splatting.gaussian_renderer import render
 from thirdparty.gaussian_splatting.utils.graphics_utils import getProjectionMatrix2
@@ -122,10 +123,12 @@ def evaluate_split_rendering(
     save_dir: str,
     tag: str = "final",
 ) -> Dict:
-    """Render every frame in the valid map segment and report 8:2 metrics.
+    """Render every valid frame and report 8:2 PSNR/SSIM/LPIPS.
 
-    The evaluation itself performs no optimization. Test frames are ephemeral
-    cameras at the estimated DROID poses and never become mapper viewpoints.
+    Evaluation performs no optimization and is intentionally outside all runtime
+    timers. Test frames are ephemeral cameras at final DROID poses and never
+    become mapper viewpoints. LPIPS uses the same AlexNet/normalize=True setup as
+    Splat-SLAM's original rendering evaluator.
     """
     device = torch.device(mapper.config["device"])
     projection_matrix = getProjectionMatrix2(
@@ -139,9 +142,13 @@ def evaluate_split_rendering(
         H=stream.H_out,
     ).transpose(0, 1).to(device=device)
 
+    lpips_metric = LearnedPerceptualImagePatchSimilarity(
+        net_type="alex", normalize=True
+    ).to(device).eval()
+
     rows = []
-    train_psnr, train_ssim = [], []
-    test_psnr, test_ssim = [], []
+    train_psnr, train_ssim, train_lpips = [], [], []
+    test_psnr, test_ssim, test_lpips = [], [], []
     dummy_depth = np.zeros((stream.H_out, stream.W_out), dtype=np.float32)
 
     with torch.no_grad():
@@ -177,6 +184,12 @@ def evaluate_split_rendering(
             ssim_value = float(
                 ssim(rendered.unsqueeze(0), gt_image.unsqueeze(0)).item()
             )
+            lpips_value = float(
+                lpips_metric(rendered.unsqueeze(0), gt_image.unsqueeze(0)).item()
+            )
+            # Keep per-frame values independent even if torchmetrics changes
+            # state handling across versions.
+            lpips_metric.reset()
 
             split = "test" if stream.is_test_frame(idx) else "train"
             source_id = (
@@ -191,24 +204,36 @@ def evaluate_split_rendering(
                     "split": split,
                     "psnr": psnr_value,
                     "ssim": ssim_value,
+                    "lpips": lpips_value,
                 }
             )
 
             if split == "test":
                 test_psnr.append(psnr_value)
                 test_ssim.append(ssim_value)
+                test_lpips.append(lpips_value)
             else:
                 train_psnr.append(psnr_value)
                 train_ssim.append(ssim_value)
+                train_lpips.append(lpips_value)
 
             del camera, rendered, gt_image, c2w, w2c
+
+    del lpips_metric
 
     os.makedirs(save_dir, exist_ok=True)
     csv_path = os.path.join(save_dir, f"split_render_metrics_{tag}.csv")
     with open(csv_path, "w", newline="", encoding="utf-8") as f:
         writer = csv.DictWriter(
             f,
-            fieldnames=["frame_index", "source_frame_id", "split", "psnr", "ssim"],
+            fieldnames=[
+                "frame_index",
+                "source_frame_id",
+                "split",
+                "psnr",
+                "ssim",
+                "lpips",
+            ],
         )
         writer.writeheader()
         writer.writerows(rows)
@@ -219,8 +244,10 @@ def evaluate_split_rendering(
     return {
         "train_psnr": mean_or_nan(train_psnr),
         "train_ssim": mean_or_nan(train_ssim),
+        "train_lpips": mean_or_nan(train_lpips),
         "test_psnr": mean_or_nan(test_psnr),
         "test_ssim": mean_or_nan(test_ssim),
+        "test_lpips": mean_or_nan(test_lpips),
         "train_frames_evaluated": len(train_psnr),
         "test_frames_evaluated": len(test_psnr),
         "per_frame_metrics_csv": csv_path,
@@ -243,10 +270,15 @@ def save_evaluation_summary(
     gaussians = summary.get("gaussians")
     gaussians_text = "-" if gaussians is None else str(int(gaussians))
 
+    def time_text(key):
+        value = summary.get(key)
+        return "-" if value is None else f"{float(value):.2f}"
+
     with open(text_path, "w", encoding="utf-8") as f:
         f.write(
             "Mode      Sequence      MaxMap       ATE SE3(m)    ATE Sim3(m)   "
-            "Train PSNR/SSIM       Test PSNR/SSIM        FPS       Gaussians\n"
+            "Train PSNR/SSIM/LPIPS          Test PSNR/SSIM/LPIPS           "
+            "FPS    Online(s) Offline(s) Total(s)   Gaussians\n"
         )
         f.write(
             f"{summary.get('mode', '-'):8s}  "
@@ -255,9 +287,15 @@ def save_evaluation_summary(
             f"{summary.get('ate_rmse_se3_m', float('nan')):12.6f}  "
             f"{summary.get('ate_rmse_sim3_m', float('nan')):12.6f}  "
             f"{summary.get('train_psnr', float('nan')):7.4f}/"
-            f"{summary.get('train_ssim', float('nan')):.6f}    "
+            f"{summary.get('train_ssim', float('nan')):.6f}/"
+            f"{summary.get('train_lpips', float('nan')):.6f}    "
             f"{summary.get('test_psnr', float('nan')):7.4f}/"
-            f"{summary.get('test_ssim', float('nan')):.6f}    "
-            f"{fps_text:>8s}  {gaussians_text:>10s}\n"
+            f"{summary.get('test_ssim', float('nan')):.6f}/"
+            f"{summary.get('test_lpips', float('nan')):.6f}    "
+            f"{fps_text:>8s}  "
+            f"{time_text('online_time_sec'):>9s} "
+            f"{time_text('offline_time_sec'):>10s} "
+            f"{time_text('total_time_sec'):>8s}  "
+            f"{gaussians_text:>10s}\n"
         )
     return path
