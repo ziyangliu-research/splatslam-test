@@ -1,0 +1,38 @@
+# ETH3D rectified stereo benchmark adapter.
+# Splat-SLAM is RGB-only and consumes image_left (ETH3D camera 2).
+
+dataset: 'eth3d_rectified'
+
+cam:
+  # These values are overwritten per sequence from calibration.json by
+  # run_eth3d_rectified.py before the dataset is constructed.
+  H: 464
+  W: 742
+  fx: 1.0
+  fy: 1.0
+  cx: 0.0
+  cy: 0.0
+  png_depth_scale: 1.0
+  H_edge: 0
+  W_edge: 0
+  H_out: 464
+  W_out: 736
+
+tracking:
+  buffer: 2048
+
+evaluation:
+  test_every: 5
+  test_offset: 4
+  max_gt_gap_sec: 0.1
+  save_test_renders: True
+  trajectory_alignment: 'se3'
+
+meshing:
+  mesh: False
+  mesh_before_final_ba: False
+  gt_mesh_path: ''
+
+data:
+  dataset_root: /home/shiyo/Desktop/Datasets/ETH3D_rectified
+  output: output/ETH3D_rectified
